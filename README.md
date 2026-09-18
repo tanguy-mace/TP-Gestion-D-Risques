@@ -6,8 +6,12 @@ Application complète de prévision météo avec visualisation 3D de bâtiments 
 
 ```
 ├── backend/                              # Backend en Go (Clean Architecture / Hexagonale)
-│   ├── cmd/server/main.go                # Point d'entrée (Composition Root & Injection de Dépendances)
+│   ├── cmd/server/main.go                # Point d'entrée (Composition Root & Injection de Dépendances dynamique)
+│   ├── config.json                       # Fichier de configuration des fournisseurs
 │   ├── internal/
+│   │   ├── config/                       # Gestionnaire de configuration (JSON + Variables d'environnement)
+│   │   │   ├── config.go
+│   │   │   └── config_test.go
 │   │   ├── domain/                       # Entités métier & Ports (Interfaces)
 │   │   │   ├── weather.go
 │   │   │   └── ports.go
@@ -20,8 +24,14 @@ Application complète de prévision météo avec visualisation 3D de bâtiments 
 │   │       │   ├── handler_test.go       # Tests d'intégration httptest
 │   │       │   └── middleware.go
 │   │       └── outbound/
-│   │           ├── nominatim/            # Client géocodage OpenStreetMap Nominatim
-│   │           └── openmeteo/            # Client météo horaire Open-Meteo
+│   │           ├── ban/                  # Client géocodage BAN (Base Adresse Nationale - Souverain) [TP2]
+│   │           ├── metnorway/            # Client météo MET Norway (Locationforecast 2.0) [TP2]
+│   │           ├── nominatim/            # Client géocodage OpenStreetMap Nominatim [TP1]
+│   │           ├── openmeteo/            # Client météo horaire Open-Meteo [TP1]
+│   │           └── contract/             # Suite de tests de contrat unifiée & tests anti-fuite DTO [TP2]
+│   │               ├── geocoding_contract_test.go
+│   │               ├── weather_contract_test.go
+│   │               └── dto_leak_test.go
 │   └── go.mod
 │
 └── frontend/                             # Frontend en Svelte (JavaScript pur, aucun TypeScript)
@@ -48,59 +58,74 @@ Application complète de prévision météo avec visualisation 3D de bâtiments 
 
 ### Backend (Go)
 
+Par défaut, l'application utilise désormais le géocodeur souverain **BAN** et le fournisseur météo **MET Norway** :
+
 ```bash
 cd backend
 go run ./cmd/server
 ```
 
-Le serveur démarre par défaut sur `http://localhost:8081` (ou sur la variable d'environnement `PORT` si définie).
-- Endpoint météo : `GET http://localhost:8081/weather?address=Paris`
+Le serveur démarre par défaut sur `http://localhost:8081`.
+- Endpoint météo : `GET http://localhost:8081/weather?address=Alès`
 - Endpoint santé : `GET http://localhost:8081/health`
 
-### Frontend (Svelte)
+### Configuration dynamique des fournisseurs (sans recompilation) [TP2]
 
-Le frontend est du bonus et ne fonctionne pas comme souhaité.
+Vous pouvez permuter les fournisseurs à chaud à l'aide de variables d'environnement ou via le fichier `config.json` :
 
-Dans un second terminal :
-
+#### Via variables d'environnement :
 ```bash
-cd frontend
-npm install
-npm run dev
+# Utiliser les anciens fournisseurs (Nominatim + Open-Meteo)
+GEOCODING_PROVIDER=nominatim WEATHER_PROVIDER=openmeteo go run ./cmd/server
+
+# Utiliser BAN avec MET Norway (défaut)
+GEOCODING_PROVIDER=ban WEATHER_PROVIDER=metnorway go run ./cmd/server
+
+# Spécifier un User-Agent personnalisé pour MET Norway
+METNORWAY_USER_AGENT="MonApp/1.0 contact@mon-ecole.fr" go run ./cmd/server
 ```
 
-L'application est accessible sur `http://localhost:5173`.
+#### Via `config.json` :
+Modifiez directement les champs dans `backend/config.json` :
+```json
+{
+  "port": "8081",
+  "geocoding_provider": "ban",
+  "weather_provider": "metnorway"
+}
+```
 
 ---
 
 ## 2. Exécution des Tests Backend
 
-Pour exécuter l'ensemble des tests unitaires (avec mocks des ports) et les tests d'intégration HTTP (`httptest`) :
+Le backend dispose d'une suite complète de tests unitaires, de tests d'intégration HTTP, de tests de contrat unifiés et de tests de pureté d'architecture :
 
 ```bash
 cd backend
 go test ./... -v
 ```
 
+### Détail des tests de contrat [TP2]
+- **Suite de contrat de géocodage** (`contract/geocoding_contract_test.go`) :
+  - Exécutée de manière strictement identique contre **Nominatim** et **BAN**.
+  - Valide : adresse valide, adresse introuvable (`ErrLocationNotFound`), réponse vide (`ErrLocationNotFound`), et gestion des caractères accentués (ex: *Alès*).
+- **Suite de contrat météo** (`contract/weather_contract_test.go`) :
+  - Exécutée contre **Open-Meteo** et **MET Norway**.
+  - Valide : prévisions horaires exploitables (`Time`, `Temperature`, `WeatherCode`) et gestion des pannes amont (`ErrWeatherFetchFailed`).
+- **Tests d'étanchéité et pureté d'architecture** (`contract/dto_leak_test.go`) :
+  - Analyse statique de l'AST Go pour garantir qu'aucun DTO interne d'API (`banResponse`, `nominatimResponseItem`, `metNorwayResponse`, etc.) n'est exporté hors de son adaptateur.
+  - Vérifie que le `domain` n'importe aucune dépendance externe ni aucun adaptateur.
+
 ---
 
-## 3. Fonctionnalités Clés
+## 3. Architecture & TP2
 
-1. **Architecture Hexagonale Stricte** :
-   - Le cœur de domaine (`domain`, `usecase`) ne dépend d'aucune bibliothèque externe ni framework HTTP.
-   - Les interfaces secondaires (`GeocodingPort`, `WeatherPort`) et primaires (`WeatherUseCase`) permettent l'inversion de contrôle (IoC) et l'injection de dépendances complète.
-   - Aucun singleton global.
+1. **Coût du changement minimal (IoC & DI)** :
+   - L'ajout des deux nouveaux adaptateurs (**BAN** et **MET Norway**) a été réalisé sans modifier une seule ligne du domaine (`domain`) ou des cas d'utilisation (`usecase`).
+   - L'injection de dépendance dans `cmd/server/main.go` résout dynamiquement les implémentations selon la configuration.
 
-2. **Rendu 3D OpenStreetMap & Three.js** :
-   - Interrogation directe de l'Overpass API d'OSM (`way["building"](around:1000, lat, lon)`).
-   - Projection métrique des coordonnées géodésiques WGS84 centrée sur l'adresse demandée.
-   - Génération de maillages 3D polygonaux extrudés via `THREE.ExtrudeGeometry` avec détection des hauteurs ou niveaux.
-   - Contrôle libre de caméra OrbitControls limité au rayon de 1 km autour de la position.
-
-3. **Météo Caricaturale 3D & Timelapse** :
-   - Soleil cartoon géant pulsant avec couronne de rayons en rotation et visage stylisé.
-   - Nuages low-poly volumétriques en mouvement continu.
-   - Particules de pluie et de neige animées selon les conditions météo.
-   - Flashs lumineux stroboscopiques en cas d'orage (codes WMO 95+).
-   - Timeline interactive de 24 heures avec mode **Timelapse** interpolant fluidement l'heure, le cycle jour/nuit et l'éclairage de la ville.
+2. **Respect des spécificités d'API** :
+   - **BAN** : Inversion de l'ordre GeoJSON `[longitude, latitude]` vers `domain.Location{Latitude, Longitude}`.
+   - **MET Norway** : Header obligatoire `User-Agent` identifiable pour éviter l'erreur HTTP 403, et traduction des `symbol_code` météo vers la nomenclature universelle WMO.
 

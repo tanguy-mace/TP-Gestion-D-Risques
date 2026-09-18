@@ -1,0 +1,12 @@
+{
+  "port": "8081",
+  "geocoding_provider": "ban",
+  "weather_provider": "metnorway",
+  "ban_base_url": "https://api-adresse.data.gouv.fr/search",
+  "nominatim_base_url": "https://nominatim.openstreetmap.org/search",
+  "nominatim_user_agent": "MeteoApp-Fullstack/1.0",
+  "metnorway_base_url": "https://api.met.no/weatherapi/locationforecast/2.0/compact",
+  "metnorway_user_agent": "TP2-MeteoApi/1.0 prenom.nom@ecole.fr",
+  "openmeteo_base_url": "https://api.open-meteo.com/v1/forecast"
+}
+

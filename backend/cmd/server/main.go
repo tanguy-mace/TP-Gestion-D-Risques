@@ -11,34 +11,55 @@ import (
 	"time"
 
 	httpAdapter "meteo-app/backend/internal/adapters/inbound/http"
+	"meteo-app/backend/internal/adapters/outbound/ban"
+	"meteo-app/backend/internal/adapters/outbound/metnorway"
 	"meteo-app/backend/internal/adapters/outbound/nominatim"
 	"meteo-app/backend/internal/adapters/outbound/openmeteo"
+	"meteo-app/backend/internal/config"
+	"meteo-app/backend/internal/domain"
 	"meteo-app/backend/internal/usecase"
 )
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8081"
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Erreur chargement configuration : %v", err)
 	}
 
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
-	nominatimClient := nominatim.NewClient(
-		httpClient,
-		"https://nominatim.openstreetmap.org/search",
-		"Meteo3D-App/1.0",
-	)
+	// Dynamic instantiation of Geocoding Port based on configuration
+	var geocodingPort domain.GeocodingPort
+	switch cfg.GeocodingProvider {
+	case "nominatim":
+		log.Println("Fournisseur de géocodage sélectionné : Nominatim (OpenStreetMap)")
+		geocodingPort = nominatim.NewClient(httpClient, cfg.NominatimBaseURL, cfg.NominatimUserAgent)
+	case "ban":
+		fallthrough
+	default:
+		log.Println("Fournisseur de géocodage sélectionné : BAN (Base Adresse Nationale - Souverain)")
+		geocodingPort = ban.NewClient(httpClient, cfg.BanBaseURL)
+	}
 
-	openMeteoClient := openmeteo.NewClient(
-		httpClient,
-		"https://api.open-meteo.com/v1/forecast",
-	)
+	// Dynamic instantiation of Weather Port based on configuration
+	var weatherPort domain.WeatherPort
+	switch cfg.WeatherProvider {
+	case "openmeteo":
+		log.Println("Fournisseur météo sélectionné : Open-Meteo")
+		weatherPort = openmeteo.NewClient(httpClient, cfg.OpenMeteoBaseURL)
+	case "metnorway":
+		fallthrough
+	default:
+		log.Printf("Fournisseur météo sélectionné : MET Norway (Locationforecast 2.0, User-Agent: %s)", cfg.MetNorwayUserAgent)
+		weatherPort = metnorway.NewClient(httpClient, cfg.MetNorwayBaseURL, cfg.MetNorwayUserAgent)
+	}
 
-	weatherUseCase := usecase.NewWeatherService(nominatimClient, openMeteoClient)
+	// Inject chosen outbound adapters into the use case (Clean Architecture / Hexagonal)
+	weatherUseCase := usecase.NewWeatherService(geocodingPort, weatherPort)
 
+	// Inject use case into the inbound HTTP handler
 	weatherHandler := httpAdapter.NewWeatherHandler(weatherUseCase)
 
 	allowedOrigins := []string{
@@ -51,7 +72,7 @@ func main() {
 	router := httpAdapter.NewRouter(weatherHandler, allowedOrigins)
 
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         ":" + cfg.Port,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -62,7 +83,7 @@ func main() {
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Serveur météo démarré sur http://localhost:%s", port)
+		log.Printf("Serveur météo démarré sur http://localhost:%s", cfg.Port)
 		log.Printf("Endpoints disponibles :")
 		log.Printf("  - GET /weather?address={address}")
 		log.Printf("  - GET /health")
